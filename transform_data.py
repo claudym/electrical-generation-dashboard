@@ -2,6 +2,9 @@ import json
 import uuid
 from datetime import datetime, timedelta
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 
 def transform(input_object):
     transformed_objects = []
@@ -34,10 +37,29 @@ def transform(input_object):
     
     return transformed_objects
 
-def fetch_data_from_api(url):
-    response = requests.get(url)
-    response.raise_for_status()  # Raise an error for bad status codes
-    return response.json()
+def fetch_data_from_api(url, retries=3, backoff_factor=0.3, timeout=10):
+    session = requests.Session()
+
+    # Retry strategy
+    retry_strategy = Retry(
+        total=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["HEAD", "GET", "OPTIONS"]  # Updated parameter name
+    )
+
+    # Apply retry strategy
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+
+    try:
+        response = session.get(url, timeout=timeout)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"An error occurred: {e}")
+        return None
 
 def main():
     current_date = '05/17/2024'
@@ -45,16 +67,21 @@ def main():
     
     # Fetch data from API
     data = fetch_data_from_api(api_url)
-    input_data = data["GetPostDespacho"]
-    
-    all_transformed_data = []
-    for item in input_data:
-        all_transformed_data.extend(transform(item))
-    
-    with open('transformed_data.json', 'w', encoding='utf-8') as outfile:
-        json.dump(all_transformed_data, outfile, indent=4, ensure_ascii=False)
-    
-    print("Data transformation complete. Output written to transformed_data.json.")
+    if data:
+        input_data = data["GetPostDespacho"]
+        
+        # Transform the data
+        all_transformed_data = []
+        for item in input_data:
+            all_transformed_data.extend(transform(item))
+        
+        # Save the transformed data to a file in UTF-8 encoding
+        with open('transformed_data.json', 'w', encoding='utf-8') as outfile:
+            json.dump(all_transformed_data, outfile, indent=4, ensure_ascii=False)
+        
+        print("Data transformation complete. Output written to transformed_data.json.")
+    else:
+        print("Failed to fetch data from API.")
 
 if __name__ == "__main__":
     main()
