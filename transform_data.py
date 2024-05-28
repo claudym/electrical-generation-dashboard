@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import time
 
 
 def transform(input_object):
@@ -62,26 +63,41 @@ def fetch_data_from_api(url, retries=3, backoff_factor=0.3, timeout=10):
         return None
 
 def main():
-    current_date = '05/17/2024'
-    api_url = f'https://apps.oc.org.do/wsOCWebsiteChart/Service.asmx/GetPostDespachoJSon?Fecha={current_date}'
+    # Measuring time
+    processing_start_time = time.process_time()
+
+    start_date = '2024-01-01'
+    end_date = '2024-04-30'
     
-    # Fetch data from API
-    data = fetch_data_from_api(api_url)
-    if data:
-        input_data = data["GetPostDespacho"]
+    start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
+    end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
+    
+    current_date_obj = start_date_obj
+
+    all_transformed_data = []
+
+    while current_date_obj <= end_date_obj:
+        current_date_str = current_date_obj.strftime('%m/%d/%Y')
+        api_url = f'https://apps.oc.org.do/wsOCWebsiteChart/Service.asmx/GetPostDespachoJSon?Fecha={current_date_str}'
         
-        # Transform the data
-        all_transformed_data = []
-        for item in input_data:
-            all_transformed_data.extend(transform(item))
+        data = fetch_data_from_api(api_url)
+        if data:
+            input_data = data["GetPostDespacho"]
+            
+            for item in input_data:
+                all_transformed_data.extend(transform(item))
         
-        # Save the transformed data to a file in UTF-8 encoding
-        with open('transformed_data.json', 'w', encoding='utf-8') as outfile:
-            json.dump(all_transformed_data, outfile, indent=4, ensure_ascii=False)
-        
-        print("Data transformation complete. Output written to transformed_data.json.")
-    else:
-        print("Failed to fetch data from API.")
+        current_date_obj += timedelta(days=1)
+    
+    with open('transformed_data.json', 'w', encoding='utf-8') as outfile:
+        json.dump(all_transformed_data, outfile, indent=4, ensure_ascii=False)
+
+    # Measuring time
+    processing_end_time = time.process_time()
+    processing_time = processing_end_time - processing_start_time
+
+    print("Data transformation complete. Output written to transformed_data.json.")
+    print(f"Data processing time: {processing_time:.2f} seconds.")
 
 if __name__ == "__main__":
     main()
