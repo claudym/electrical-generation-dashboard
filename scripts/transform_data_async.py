@@ -7,7 +7,6 @@ from decimal import Decimal
 import asyncio
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 import aiohttp.client_exceptions
-from concurrent.futures import ProcessPoolExecutor
 
 
 TABLE_NAME = 'basic_electrical_generation_data_dom_rep'
@@ -36,6 +35,7 @@ def transform(input_object):
             "energy": energy_value
         }
     
+    # Handle H24 for the next day
     next_day_time = base_time + timedelta(days=1)
     datetime_str = next_day_time.strftime("%Y-%m-%dT%H:%M:%S")
     energy_value = Decimal(str(input_object['H24']))
@@ -68,28 +68,22 @@ async def batch_write_items(table, items, batch_size=25):
             for item in items[i:i + batch_size]:
                 await batch.put_item(Item=item)
 
-async def process_date(http_session, current_date_str, dynamodb, executor):
+async def process_date(http_session, current_date_str, dynamodb):
     api_url = f'https://apps.oc.org.do/wsOCWebsiteChart/Service.asmx/GetPostDespachoJSon?Fecha={current_date_str}'
     data = await fetch_data_from_api(api_url, http_session)
     if data:
         input_data = data["GetPostDespacho"]
-        loop = asyncio.get_running_loop()
-        transformed_items_list = await loop.run_in_executor(executor, transform_parallel, input_data)
-        all_transformed_items = {k: v for d in transformed_items_list for k, v in d.items()}
+        all_transformed_items = {}
+        for item in input_data:
+            transformed_items = transform(item)
+            all_transformed_items.update(transformed_items)
         
         table = await dynamodb.Table(TABLE_NAME)
         await batch_write_items(table, list(all_transformed_items.values()))
 
-def transform_parallel(input_data):
-    all_transformed = []
-    for item in input_data:
-        transformed = transform(item)
-        all_transformed.append(transformed)
-    return all_transformed
-
 async def main():
-    start_date = '2013-02-12'
-    end_date = '2013-02-16'
+    start_date = '2013-01-28'
+    end_date = '2013-02-01'
     
     start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
     end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
@@ -99,15 +93,14 @@ async def main():
 
     session = aioboto3.Session()
 
-    with ProcessPoolExecutor() as executor:
-        async with aiohttp.ClientSession() as http_session:
-            async with session.resource('dynamodb') as dynamodb:
-                while current_date_obj <= end_date_obj:
-                    current_date_str = current_date_obj.strftime('%m/%d/%Y')
-                    tasks.append(process_date(http_session, current_date_str, dynamodb, executor))
-                    current_date_obj += timedelta(days=1)
-            
-                await asyncio.gather(*tasks)
+    async with aiohttp.ClientSession() as http_session:
+        async with session.resource('dynamodb') as dynamodb:
+            while current_date_obj <= end_date_obj:
+                current_date_str = current_date_obj.strftime('%m/%d/%Y')
+                tasks.append(process_date(http_session, current_date_str, dynamodb))
+                current_date_obj += timedelta(days=1)
+        
+            await asyncio.gather(*tasks)
     print("Data transformation and upload complete.")
 
 if __name__ == "__main__":
