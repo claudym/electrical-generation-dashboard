@@ -1,9 +1,7 @@
 import json
 import uuid
 from datetime import datetime, timedelta
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import aiohttp
 import aioboto3
 from decimal import Decimal
 import asyncio
@@ -51,32 +49,16 @@ def transform(input_object):
     
     return transformed_objects
 
-def fetch_data_from_api(url, retries=3, backoff_factor=0.3, timeout=10):
-    session = requests.Session()
-
-    # Retry strategy
-    retry_strategy = Retry(
-        total=retries,
-        backoff_factor=backoff_factor,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["HEAD", "GET", "OPTIONS"]
-    )
-
-    # Apply retry strategy
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-
+async def fetch_data_from_api(url, session):
     try:
-        response = session.get(url, timeout=timeout)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
+        async with session.get(url) as response:
+            response.raise_for_status()
+            return await response.json()
+    except aiohttp.ClientError as e:
         print(f"An error occurred: {e}")
         return None
 
 async def batch_write_items(table, items, batch_size=25):
-    # Deduplicate items based on primary key
     unique_items = {}
     for item in items:
         key = item['id']
@@ -89,9 +71,9 @@ async def batch_write_items(table, items, batch_size=25):
             for item in items[i:i + batch_size]:
                 await batch.put_item(Item=item)
 
-async def process_date(session, current_date_str):
+async def process_date(http_session, current_date_str, dynamodb):
     api_url = f'https://apps.oc.org.do/wsOCWebsiteChart/Service.asmx/GetPostDespachoJSon?Fecha={current_date_str}'
-    data = fetch_data_from_api(api_url)
+    data = await fetch_data_from_api(api_url, http_session)
     if data:
         input_data = data["GetPostDespacho"]
         all_transformed_items = []
@@ -99,13 +81,12 @@ async def process_date(session, current_date_str):
             transformed_items = transform(item)
             all_transformed_items.extend(transformed_items)
         
-        async with session.resource('dynamodb') as dynamodb:
-            table = await dynamodb.Table(TABLE_NAME)
-            await batch_write_items(table, all_transformed_items)
+        table = await dynamodb.Table(TABLE_NAME)
+        await batch_write_items(table, all_transformed_items)
 
 async def main():
-    start_date = '2020-01-03'
-    end_date = '2020-01-04'
+    start_date = '2013-01-01'
+    end_date = '2013-01-01'
     
     start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
     end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
@@ -115,12 +96,14 @@ async def main():
 
     session = aioboto3.Session()
 
-    while current_date_obj <= end_date_obj:
-        current_date_str = current_date_obj.strftime('%m/%d/%Y')
-        tasks.append(process_date(session, current_date_str))
-        current_date_obj += timedelta(days=1)
-    
-    await asyncio.gather(*tasks)
+    async with aiohttp.ClientSession() as http_session:
+        async with session.resource('dynamodb') as dynamodb:
+            while current_date_obj <= end_date_obj:
+                current_date_str = current_date_obj.strftime('%m/%d/%Y')
+                tasks.append(process_date(http_session, current_date_str, dynamodb))
+                current_date_obj += timedelta(days=1)
+        
+            await asyncio.gather(*tasks)
     print("Data transformation and upload complete.")
 
 if __name__ == "__main__":
