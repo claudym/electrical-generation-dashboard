@@ -8,6 +8,7 @@ import asyncio
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 import aiohttp.client_exceptions
 
+
 TABLE_NAME = 'basic_electrical_generation_data_dom_rep'
 NAMESPACE_UUID = uuid.NAMESPACE_URL
 
@@ -16,7 +17,7 @@ def generate_uuid(group, company, plant, datetime_str):
     return str(uuid.uuid5(NAMESPACE_UUID, unique_string))
 
 def transform(input_object):
-    transformed_objects = []
+    transformed_objects = {}
     base_time = datetime.strptime(input_object['FECHA'], "%Y-%m-%dT%H:%M:%S")
     
     for hour in range(1, 24):
@@ -24,7 +25,7 @@ def transform(input_object):
         datetime_str = new_time.strftime("%Y-%m-%dT%H:%M:%S")
         energy_value = Decimal(str(input_object[f'H{hour}']))
         item_id = generate_uuid(input_object['GRUPO'], input_object['EMPRESA'], input_object['CENTRAL'], datetime_str)
-        transformed_objects.append({
+        transformed_objects[item_id] = {
             "id": item_id,
             "group": input_object['GRUPO'],
             "group_plant": f"{input_object['GRUPO']}-{input_object['CENTRAL']}",
@@ -32,14 +33,14 @@ def transform(input_object):
             "plant": input_object['CENTRAL'],
             "datetime": new_time.isoformat(),
             "energy": energy_value
-        })
+        }
     
     # Handle H24 for the next day
     next_day_time = base_time + timedelta(days=1)
     datetime_str = next_day_time.strftime("%Y-%m-%dT%H:%M:%S")
     energy_value = Decimal(str(input_object['H24']))
     item_id = generate_uuid(input_object['GRUPO'], input_object['EMPRESA'], input_object['CENTRAL'], datetime_str)
-    transformed_objects.append({
+    transformed_objects[item_id] = {
         "id": item_id,
         "group": input_object['GRUPO'],
         "group_plant": f"{input_object['GRUPO']}-{input_object['CENTRAL']}",
@@ -47,7 +48,7 @@ def transform(input_object):
         "plant": input_object['CENTRAL'],
         "datetime": next_day_time.isoformat(),
         "energy": energy_value
-    })
+    }
     
     return transformed_objects
 
@@ -62,13 +63,6 @@ async def fetch_data_from_api(url, session):
         raise
 
 async def batch_write_items(table, items, batch_size=25):
-    unique_items = {}
-    for item in items:
-        key = item['id']
-        unique_items[key] = item
-
-    items = list(unique_items.values())
-
     async with table.batch_writer() as batch:
         for i in range(0, len(items), batch_size):
             for item in items[i:i + batch_size]:
@@ -79,17 +73,17 @@ async def process_date(http_session, current_date_str, dynamodb):
     data = await fetch_data_from_api(api_url, http_session)
     if data:
         input_data = data["GetPostDespacho"]
-        all_transformed_items = []
+        all_transformed_items = {}
         for item in input_data:
             transformed_items = transform(item)
-            all_transformed_items.extend(transformed_items)
+            all_transformed_items.update(transformed_items)
         
         table = await dynamodb.Table(TABLE_NAME)
-        await batch_write_items(table, all_transformed_items)
+        await batch_write_items(table, list(all_transformed_items.values()))
 
 async def main():
-    start_date = '2013-01-01'
-    end_date = '2013-01-02'
+    start_date = '2013-01-11'
+    end_date = '2013-01-12'
     
     start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
     end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
