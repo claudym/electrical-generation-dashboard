@@ -5,6 +5,8 @@ import aiohttp
 import aioboto3
 from decimal import Decimal
 import asyncio
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+import aiohttp.client_exceptions
 
 TABLE_NAME = 'basic_electrical_generation_data_dom_rep'
 NAMESPACE_UUID = uuid.NAMESPACE_URL
@@ -49,6 +51,7 @@ def transform(input_object):
     
     return transformed_objects
 
+@retry(wait=wait_exponential(min=1, max=10), stop=stop_after_attempt(5), retry=retry_if_exception_type(aiohttp.ClientError))
 async def fetch_data_from_api(url, session):
     try:
         async with session.get(url) as response:
@@ -56,7 +59,7 @@ async def fetch_data_from_api(url, session):
             return await response.json()
     except aiohttp.ClientError as e:
         print(f"An error occurred: {e}")
-        return None
+        raise
 
 async def batch_write_items(table, items, batch_size=25):
     unique_items = {}
@@ -85,8 +88,8 @@ async def process_date(http_session, current_date_str, dynamodb):
         await batch_write_items(table, all_transformed_items)
 
 async def main():
-    start_date = '2013-01-01'
-    end_date = '2013-01-01'
+    start_date = '2020-01-06'
+    end_date = '2020-01-07'
     
     start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
     end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
