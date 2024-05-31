@@ -13,8 +13,8 @@ from concurrent.futures import ProcessPoolExecutor
 TABLE_NAME = 'basic_electrical_generation_data_dom_rep'
 NAMESPACE_UUID = uuid.NAMESPACE_URL
 
-def generate_uuid(group, company, plant, date):
-    unique_string = f"{group}-{company}-{plant}-{date}"
+def generate_uuid(group, company, plant, datetime_str):
+    unique_string = f"{group}-{company}-{plant}-{datetime_str}"
     return str(uuid.uuid5(NAMESPACE_UUID, unique_string))
 
 def transform(input_object):
@@ -32,7 +32,7 @@ def transform(input_object):
             "group_plant": f"{input_object['GRUPO']}-{input_object['CENTRAL']}",
             "company": input_object['EMPRESA'],
             "plant": input_object['CENTRAL'],
-            "date": new_time.isoformat(),
+            "datetime": new_time.isoformat(),
             "energy": energy_value
         })
     
@@ -47,7 +47,7 @@ def transform(input_object):
         "group_plant": f"{input_object['GRUPO']}-{input_object['CENTRAL']}",
         "company": input_object['EMPRESA'],
         "plant": input_object['CENTRAL'],
-        "date": next_day_time.isoformat(),
+        "datetime": next_day_time.isoformat(),
         "energy": energy_value
     })
     

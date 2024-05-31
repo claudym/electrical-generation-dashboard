@@ -11,8 +11,8 @@ import aiohttp.client_exceptions
 TABLE_NAME = 'basic_electrical_generation_data_dom_rep'
 NAMESPACE_UUID = uuid.NAMESPACE_URL
 
-def generate_uuid(group, company, plant, date):
-    unique_string = f"{group}-{company}-{plant}-{date}"
+def generate_uuid(group, company, plant, datetime_str):
+    unique_string = f"{group}-{company}-{plant}-{datetime_str}"
     return str(uuid.uuid5(NAMESPACE_UUID, unique_string))
 
 def transform(input_object):
@@ -30,7 +30,7 @@ def transform(input_object):
             "group_plant": f"{input_object['GRUPO']}-{input_object['CENTRAL']}",
             "company": input_object['EMPRESA'],
             "plant": input_object['CENTRAL'],
-            "date": new_time.isoformat(),
+            "datetime": new_time.isoformat(),
             "energy": energy_value
         })
     
@@ -45,7 +45,7 @@ def transform(input_object):
         "group_plant": f"{input_object['GRUPO']}-{input_object['CENTRAL']}",
         "company": input_object['EMPRESA'],
         "plant": input_object['CENTRAL'],
-        "date": next_day_time.isoformat(),
+        "datetime": next_day_time.isoformat(),
         "energy": energy_value
     })
     
@@ -88,8 +88,8 @@ async def process_date(http_session, current_date_str, dynamodb):
         await batch_write_items(table, all_transformed_items)
 
 async def main():
-    start_date = '2020-01-06'
-    end_date = '2020-01-07'
+    start_date = '2013-01-01'
+    end_date = '2013-01-02'
     
     start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
     end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
