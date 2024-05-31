@@ -4,11 +4,14 @@ from datetime import datetime, timedelta
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import aioboto3
+import boto3
 from decimal import Decimal
-import asyncio
+
 
 TABLE_NAME = 'basic_electrical_generation_data_dom_rep'
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table(TABLE_NAME)
+
 NAMESPACE_UUID = uuid.NAMESPACE_URL
 
 def generate_uuid(group, company, plant, date):
@@ -36,7 +39,7 @@ def transform(input_object):
     
     # Handle H24 for the next day
     next_day_time = base_time + timedelta(days=1)
-    datetime_str = next_day_time.strftime("%Y-%m-%dT%H:%M:%S")
+    datetime_str = new_time.strftime("%Y-%m-%dT%H:%M:%S")
     energy_value = Decimal(str(input_object['H24']))
     item_id = generate_uuid(input_object['GRUPO'], input_object['EMPRESA'], input_object['CENTRAL'], datetime_str)
     transformed_objects.append({
@@ -59,7 +62,7 @@ def fetch_data_from_api(url, retries=3, backoff_factor=0.3, timeout=10):
         total=retries,
         backoff_factor=backoff_factor,
         status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["HEAD", "GET", "OPTIONS"]
+        allowed_methods=["HEAD", "GET", "OPTIONS"]  # Updated parameter name
     )
 
     # Apply retry strategy
@@ -75,8 +78,7 @@ def fetch_data_from_api(url, retries=3, backoff_factor=0.3, timeout=10):
         print(f"An error occurred: {e}")
         return None
 
-async def batch_write_items(table, items, batch_size=25):
-    # Deduplicate items based on primary key
+def batch_write_items(table, items, batch_size=25):
     unique_items = {}
     for item in items:
         key = item['id']
@@ -84,44 +86,39 @@ async def batch_write_items(table, items, batch_size=25):
 
     items = list(unique_items.values())
 
-    async with table.batch_writer() as batch:
-        for i in range(0, len(items), batch_size):
-            for item in items[i:i + batch_size]:
-                await batch.put_item(Item=item)
+    for i in range(0, len(items), batch_size):
+        batch = items[i:i+batch_size]
+        with table.batch_writer() as batch_writer:
+            for item in batch:
+                batch_writer.put_item(Item=item)
 
-async def process_date(session, current_date_str):
-    api_url = f'https://apps.oc.org.do/wsOCWebsiteChart/Service.asmx/GetPostDespachoJSon?Fecha={current_date_str}'
-    data = fetch_data_from_api(api_url)
-    if data:
-        input_data = data["GetPostDespacho"]
-        all_transformed_items = []
-        for item in input_data:
-            transformed_items = transform(item)
-            all_transformed_items.extend(transformed_items)
-        
-        async with session.resource('dynamodb') as dynamodb:
-            table = await dynamodb.Table(TABLE_NAME)
-            await batch_write_items(table, all_transformed_items)
-
-async def main():
-    start_date = '2020-01-03'
-    end_date = '2020-01-04'
+def main():
+    start_date = '2020-01-01'
+    end_date = '2020-01-02'
     
     start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
     end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
     
     current_date_obj = start_date_obj
-    tasks = []
-
-    session = aioboto3.Session()
 
     while current_date_obj <= end_date_obj:
         current_date_str = current_date_obj.strftime('%m/%d/%Y')
-        tasks.append(process_date(session, current_date_str))
+        api_url = f'https://apps.oc.org.do/wsOCWebsiteChart/Service.asmx/GetPostDespachoJSon?Fecha={current_date_str}'
+        
+        data = fetch_data_from_api(api_url)
+        if data:
+            input_data = data["GetPostDespacho"]
+            all_transformed_items = []
+
+            for item in input_data:
+                transformed_items = transform(item)
+                all_transformed_items.extend(transformed_items)
+            
+            batch_write_items(table, all_transformed_items)
+        
         current_date_obj += timedelta(days=1)
     
-    await asyncio.gather(*tasks)
     print("Data transformation and upload complete.")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
