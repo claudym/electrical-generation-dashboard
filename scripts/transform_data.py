@@ -78,6 +78,20 @@ def fetch_data_from_api(url, retries=3, backoff_factor=0.3, timeout=10):
         print(f"An error occurred: {e}")
         return None
 
+def batch_write_items(table, items, batch_size=25):
+    unique_items = {}
+    for item in items:
+        key = item['id']
+        unique_items[key] = item
+
+    items = list(unique_items.values())
+
+    for i in range(0, len(items), batch_size):
+        batch = items[i:i+batch_size]
+        with table.batch_writer() as batch_writer:
+            for item in batch:
+                batch_writer.put_item(Item=item)
+
 def main():
     start_date = '2013-01-01'
     end_date = '2013-01-01'
@@ -94,11 +108,13 @@ def main():
         data = fetch_data_from_api(api_url)
         if data:
             input_data = data["GetPostDespacho"]
-            
+            all_transformed_items = []
+
             for item in input_data:
                 transformed_items = transform(item)
-                for transformed_item in transformed_items:
-                    table.put_item(Item=transformed_item)
+                all_transformed_items.extend(transformed_items)
+            
+            batch_write_items(table, all_transformed_items)
         
         current_date_obj += timedelta(days=1)
     
