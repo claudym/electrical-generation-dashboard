@@ -37,7 +37,7 @@ from awsglue.context import GlueContext
 from awsglue.job import Job
 
 # Glue context setup
-args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+args = getResolvedOptions(sys.argv, ['JOB_NAME', 'START_DATE', 'END_DATE'])
 sc = SparkContext()
 glueContext = GlueContext(sc)
 spark = glueContext.spark_session
@@ -122,8 +122,8 @@ def transform_parallel(input_data):
     return all_transformed
 
 async def main():
-    start_date = '2020-02-01'
-    end_date = '2020-02-02'
+    start_date = args['START_DATE']
+    end_date = args['END_DATE']
     
     start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
     end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
