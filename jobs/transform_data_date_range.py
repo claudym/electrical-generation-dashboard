@@ -1,131 +1,130 @@
 import json
 import uuid
 from datetime import datetime, timedelta
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-import time
-import boto3
-from awsglue.utils import getResolvedOptions
-import sys
+from decimal import Decimal
+import aiohttp
+import aioboto3
+import asyncio
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+from concurrent.futures import ProcessPoolExecutor
+import aiohttp.client_exceptions
 
-def get_secret(secret_name):
-    secrets_client = boto3.client('secretsmanager')
-    try:
-        response = secrets_client.get_secret_value(SecretId=secret_name)
-        secret = json.loads(response['SecretString'])
-        return secret
-    except Exception as e:
-        print(f"Error retrieving secret: {e}")
-        return None
+# Initialize the Glue context and libraries
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+
+# Glue context setup
+args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
+
+TABLE_NAME = 'basic_electrical_generation_data_dom_rep'
+NAMESPACE_UUID = uuid.NAMESPACE_URL
+
+def generate_uuid(group, company, plant, datetime_str):
+    unique_string = f"{group}-{company}-{plant}-{datetime_str}"
+    return str(uuid.uuid5(NAMESPACE_UUID, unique_string))
 
 def transform(input_object):
-    transformed_objects = []
+    transformed_objects = {}
     base_time = datetime.strptime(input_object['FECHA'], "%Y-%m-%dT%H:%M:%S")
-
+    
     for hour in range(1, 24):
         new_time = base_time + timedelta(hours=hour)
-        energy_value = input_object[f'H{hour}']
-        transformed_objects.append({
-            "id": str(uuid.uuid4()),
+        datetime_str = new_time.strftime("%Y-%m-%dT%H:%M:%S")
+        energy_value = Decimal(str(input_object[f'H{hour}']))
+        item_id = generate_uuid(input_object['GRUPO'], input_object['EMPRESA'], input_object['CENTRAL'], datetime_str)
+        transformed_objects[item_id] = {
+            "id": item_id,
             "group": input_object['GRUPO'],
+            "group_plant": f"{input_object['GRUPO']}-{input_object['CENTRAL']}",
             "company": input_object['EMPRESA'],
-            "central": input_object['CENTRAL'],
-            "date": new_time.isoformat(),
+            "plant": input_object['CENTRAL'],
+            "datetime": new_time.isoformat(),
             "energy": energy_value
-        })
-
+        }
+    
     next_day_time = base_time + timedelta(days=1)
-    energy_value = input_object['H24']
-    transformed_objects.append({
-        "id": str(uuid.uuid4()),
+    datetime_str = next_day_time.strftime("%Y-%m-%dT%H:%M:%S")
+    energy_value = Decimal(str(input_object['H24']))
+    item_id = generate_uuid(input_object['GRUPO'], input_object['EMPRESA'], input_object['CENTRAL'], datetime_str)
+    transformed_objects[item_id] = {
+        "id": item_id,
         "group": input_object['GRUPO'],
+        "group_plant": f"{input_object['GRUPO']}-{input_object['CENTRAL']}",
         "company": input_object['EMPRESA'],
-        "central": input_object['CENTRAL'],
-        "date": next_day_time.isoformat(),
+        "plant": input_object['CENTRAL'],
+        "datetime": next_day_time.isoformat(),
         "energy": energy_value
-    })
-
+    }
+    
     return transformed_objects
 
-def fetch_data_from_api(url, retries=3, backoff_factor=0.3, timeout=10):
-    session = requests.Session()
-
-    retry_strategy = Retry(
-        total=retries,
-        backoff_factor=backoff_factor,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["HEAD", "GET", "OPTIONS"]
-    )
-
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-
+@retry(wait=wait_exponential(min=1, max=10), stop=stop_after_attempt(5), retry=retry_if_exception_type(aiohttp.ClientError))
+async def fetch_data_from_api(url, session):
     try:
-        response = session.get(url, timeout=timeout)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
+        async with session.get(url) as response:
+            response.raise_for_status()
+            return await response.json()
+    except aiohttp.ClientError as e:
         print(f"An error occurred: {e}")
-        return None
+        raise
 
-def save_to_dynamodb(dynamodb, table_name, data):
-    table = dynamodb.Table(table_name)
-    with table.batch_writer() as batch:
-        for item in data:
-            batch.put_item(Item=item)
+async def batch_write_items(table, items, batch_size=25):
+    async with table.batch_writer() as batch:
+        for i in range(0, len(items), batch_size):
+            for item in items[i:i + batch_size]:
+                await batch.put_item(Item=item)
 
-def main():
-    # Parse arguments
-    args = getResolvedOptions(sys.argv, ['start_date', 'end_date', 'dynamodb_table', 'secret_name'])
-    start_date = args['start_date']
-    end_date = args['end_date']
-    dynamodb_table = args['dynamodb_table']
-    secret_name = args['secret_name']
+async def process_date(http_session, current_date_str, dynamodb, executor):
+    api_url = f'https://apps.oc.org.do/wsOCWebsiteChart/Service.asmx/GetPostDespachoJSon?Fecha={current_date_str}'
+    data = await fetch_data_from_api(api_url, http_session)
+    if data:
+        input_data = data["GetPostDespacho"]
+        loop = asyncio.get_running_loop()
+        transformed_items_list = await loop.run_in_executor(executor, transform_parallel, input_data)
+        all_transformed_items = {k: v for d in transformed_items_list for k, v in d.items()}
+        
+        table = await dynamodb.Table(TABLE_NAME)
+        await batch_write_items(table, list(all_transformed_items.values()))
+
+def transform_parallel(input_data):
+    all_transformed = []
+    for item in input_data:
+        transformed = transform(item)
+        all_transformed.append(transformed)
+    return all_transformed
+
+async def main():
+    start_date = '2014-02-01'
+    end_date = '2014-02-02'
     
-    # Retrieve DynamoDB credentials from AWS Secrets Manager
-    secret = get_secret(secret_name)
-    if not secret:
-        print("Failed to retrieve secret. Exiting.")
-        return
-
-    # Initialize DynamoDB client with credentials from Secrets Manager
-    dynamodb = boto3.resource('dynamodb', 
-                              aws_access_key_id=secret['aws_access_key_id'], 
-                              aws_secret_access_key=secret['aws_secret_access_key'], 
-                              region_name=secret['region'])
-
     start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
     end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
     
     current_date_obj = start_date_obj
+    tasks = []
 
-    all_transformed_data = []
+    session = aioboto3.Session()
 
-    processing_start_time = time.process_time()
-
-    while current_date_obj <= end_date_obj:
-        current_date_str = current_date_obj.strftime('%m/%d/%Y')
-        api_url = f'https://apps.oc.org.do/wsOCWebsiteChart/Service.asmx/GetPostDespachoJSon?Fecha={current_date_str}'
-        
-        data = fetch_data_from_api(api_url)
-        if data:
-            input_data = data["GetPostDespacho"]
+    with ProcessPoolExecutor() as executor:
+        async with aiohttp.ClientSession() as http_session:
+            async with session.resource('dynamodb') as dynamodb:
+                while current_date_obj <= end_date_obj:
+                    current_date_str = current_date_obj.strftime('%m/%d/%Y')
+                    tasks.append(process_date(http_session, current_date_str, dynamodb, executor))
+                    current_date_obj += timedelta(days=1)
             
-            for item in input_data:
-                all_transformed_data.extend(transform(item))
-        
-        current_date_obj += timedelta(days=1)
-
-    processing_end_time = time.process_time()
-    processing_time = processing_end_time - processing_start_time
-
-    # Save the transformed data to DynamoDB
-    save_to_dynamodb(dynamodb, dynamodb_table, all_transformed_data)
-
-    print("Data transformation complete. Data saved to DynamoDB.")
-    print(f"Data processing time: {processing_time:.2f} seconds.")
+                await asyncio.gather(*tasks)
+    print("Data transformation and upload complete.")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
+    job.commit()
