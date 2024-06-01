@@ -1,3 +1,23 @@
+import sys
+import os
+import zipfile
+
+# Add the directory where Glue downloads the dependencies to the Python path
+dependencies_path = '/tmp'
+
+# Ensure the path exists
+if not os.path.exists(dependencies_path):
+    os.makedirs(dependencies_path)
+
+# Unzip the dependencies
+zip_file_path = os.path.join(dependencies_path, 'transform_data_date_range_deps.zip')
+
+with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+    zip_ref.extractall(dependencies_path)
+
+# Add the extracted dependencies to the Python path
+sys.path.insert(0, dependencies_path)
+
 import json
 import uuid
 from datetime import datetime, timedelta
@@ -10,7 +30,6 @@ from concurrent.futures import ProcessPoolExecutor
 import aiohttp.client_exceptions
 
 # Initialize the Glue context and libraries
-import sys
 from awsglue.transforms import *
 from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
@@ -103,8 +122,8 @@ def transform_parallel(input_data):
     return all_transformed
 
 async def main():
-    start_date = '2014-02-01'
-    end_date = '2014-02-02'
+    start_date = '2020-02-01'
+    end_date = '2020-02-02'
     
     start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
     end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
@@ -116,7 +135,7 @@ async def main():
 
     with ProcessPoolExecutor() as executor:
         async with aiohttp.ClientSession() as http_session:
-            async with session.resource('dynamodb') as dynamodb:
+            async with session.resource('dynamodb', region_name='us-east-1') as dynamodb:
                 while current_date_obj <= end_date_obj:
                     current_date_str = current_date_obj.strftime('%m/%d/%Y')
                     tasks.append(process_date(http_session, current_date_str, dynamodb, executor))
