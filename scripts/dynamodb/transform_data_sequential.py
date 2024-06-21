@@ -4,13 +4,13 @@ from datetime import datetime, timedelta
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import boto3
+#import boto3
 from decimal import Decimal
 
 
-TABLE_NAME = 'basic_electrical_generation_data_dom_rep'
-dynamodb = boto3.resource('dynamodb')
-table = dynamodb.Table(TABLE_NAME)
+# TABLE_NAME = 'basic_electrical_generation_data_dom_rep'
+# dynamodb = boto3.resource('dynamodb')
+# table = dynamodb.Table(TABLE_NAME)
 
 NAMESPACE_UUID = uuid.NAMESPACE_URL
 
